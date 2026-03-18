@@ -79,4 +79,4 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         files: openwrt/bin/targets/**/*.bin
-      tag_name: MT7986A-LEDE-$(date +%Y%m%d)
+        tag_name: MT7986A-LEDE-$(date +%Y%m%d)
