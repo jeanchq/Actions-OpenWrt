@@ -1,130 +1,88 @@
-name: Build OpenWrt for MT7986A
+name: Build LEDE (2G+128G+MT7531AE+RTL8221B)
 
 on:
-  repository_dispatch:
-  workflow_dispatch:
-
-# 全局环境变量：强制 Node.js 24 + 网络优化
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: config/.config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  TZ: Asia/Shanghai
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 强制 Node.js 24
-  # 网络优化：超时时间延长
-  GIT_SSH_COMMAND: "ssh -o ConnectTimeout=300"
+  workflow_dispatch:  # 仅手动触发，避免误编译
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # 增加虚拟机资源（可选，提升稳定性）
-    timeout-minutes: 480
+    permissions:
+      contents: write
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4.2.2  # 最新稳定版，完全支持 Node.js 24
-
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        # 1. 替换 Ubuntu 源为阿里云（最快）
-        sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
-        sudo echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse
-        deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse
-        deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
-        deb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list
-        # 2. 安装依赖（精简，只装必需项）
-        sudo apt update -y
-        sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget libelf-dev libtool-bin
-        sudo apt autoremove -y && sudo apt clean -y
-        # 3. 10G 交换分区（必须）
-        sudo fallocate -l 10G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        # 4. 安装加速工具（解决 DNS 解析慢）
-        sudo apt install -y dnsutils
-        echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf > /dev/null  # 阿里云 DNS
-
-    - name: Clone source code (with mirror)
-      run: |
-        # 方案1：优先用国内镜像克隆源码（避免直接访问 GitHub）
-        if ! git clone --depth=1 --single-branch --branch $REPO_BRANCH https://mirror.ghproxy.com/$REPO_URL openwrt; then
-            # 方案2：备用源（清华镜像）
-            git clone --depth=1 --single-branch --branch $REPO_BRANCH https://mirrors.tuna.tsinghua.edu.cn/git/lede/openwrt.git openwrt
-        fi
-        cd openwrt
-        # 替换所有 feeds 为国内镜像（彻底解决下载失败）
-        rm -f feeds.conf.default
-        cat > feeds.conf.default << EOF
-        src-git packages https://mirrors.tuna.tsinghua.edu.cn/git/openwrt/packages.git
-        src-git luci https://mirrors.tuna.tsinghua.edu.cn/git/openwrt/luci.git
-        src-git routing https://mirrors.tuna.tsinghua.edu.cn/git/openwrt/routing.git
-        src-git telephony https://mirrors.tuna.tsinghua.edu.cn/git/openwrt/telephony.git
-        src-git kenzo https://mirror.ghproxy.com/https://github.com/kenzok8/openwrt-packages
-        src-git small https://mirror.ghproxy.com/https://github.com/kenzok8/small
-        EOF
-        # 更新 feeds（单线程，最高重试）
-        ./scripts/feeds update -a -f || ./scripts/feeds update -a -f || ./scripts/feeds update -a -f
-        ./scripts/feeds install -a
-
-    - name: Load custom config (2G/128G/USB3.0/MT7986A)
-      run: |
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config || echo "No custom config, use default"
-        cd openwrt
-        # 硬件适配 + 关闭默认 WiFi
-        cat >> .config << EOF
-        CONFIG_TARGET_mediatek=y
-        CONFIG_TARGET_mediatek_filogic=y
-        CONFIG_TARGET_mediatek_filogic_DEVICE_generic=y
-        CONFIG_KERNEL_HUGETLB_PAGE=y
-        CONFIG_KERNEL_SWAP=y
-        CONFIG_KERNEL_ZSWAP=y
-        CONFIG_PACKAGE_kmod-mmc=y
-        CONFIG_PACKAGE_kmod-block2mtd=y
-        CONFIG_PACKAGE_kmod-fs-ext4=y
-        CONFIG_PACKAGE_kmod-fs-ntfs3=y
-        CONFIG_PACKAGE_kmod-usb3=y
-        CONFIG_PACKAGE_kmod-usb-storage=y
-        CONFIG_PACKAGE_kmod-mt7530=y
-        CONFIG_PACKAGE_kmod-phy-realtek=y
-        CONFIG_PACKAGE_swconfig=y
-        CONFIG_PACKAGE_luci=y
-        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-        # 精简编译：关闭调试、减少日志
-        CONFIG_DEBUG_KERNEL=n
-        CONFIG_KERNEL_DEBUG=n
-        CONFIG_KERNEL_LOG_BUF_SHIFT=16
-        EOF
-        make defconfig
-
-    - name: Download packages (single thread)
-      run: |
-        cd openwrt
-        # 单线程下载（最慢但最稳定，彻底解决 Too many retries）
-        make download -j1 V=s
-        # 清理无效文件
-        find dl -type f -size 0 -delete
-        find dl -name "*.tmp" -delete
-
-    - name: Build firmware (low concurrency)
-      run: |
-        cd openwrt
-        # 极低并发编译（2 线程，适配网络/内存）
-        make -j2 V=s || make -j1 V=s
-        echo "Build success! Firmware path: openwrt/bin/targets/"
-
-    - name: Upload firmware (Node.js 24 compatible)
-      if: env.UPLOAD_FIRMWARE == 'true' && success()
-      uses: softprops/action-gh-release@v2.0.8  # 最新版，支持 Node.js 24
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout LEDE Source
+      uses: actions/checkout@v4
       with:
-        files: openwrt/bin/targets/**/*.bin
-        tag_name: MT7986A-LEDE-Stable-$(date +%Y%m%d)
-        generate_release_notes: true
+        fetch-depth: 0
+        repository: coolsnowwolf/lede
+        ref: master
+
+    # 1. GitHub 专用：创建 SWAP（解决 2G 内存编译 OOM，适配 GitHub 权限）
+    - name: Create SWAP (GitHub Optimized)
+      run: |
+        # GitHub 允许创建 SWAP 但路径需调整，避免权限问题
+        sudo fallocate -l 8G /mnt/swapfile
+        sudo chmod 600 /mnt/swapfile
+        sudo mkswap /mnt/swapfile
+        sudo swapon /mnt/swapfile
+        sudo sysctl vm.swappiness=10
+        # 验证 SWAP
+        swapon --show
+        free -h
+
+    # 2. 安装依赖（GitHub 用官方源，避免国内源访问慢）
+    - name: Install Dependencies
+      run: |
+        sudo apt update -y && sudo apt full-upgrade -y
+        sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+        gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget \
+        libelf-dev libtool-bin automake autoconf texinfo patch libglib2.0-dev pkg-config
+        sudo apt autoremove -y && sudo apt clean -y
+
+    # 3. 替换 LEDE 国际源（GitHub 访问国外源更快）
+    - name: Replace Global Mirrors (GitHub Optimized)
+      run: |
+        # 替换为 OpenWrt 官方国际源，避免国内源超时
+        sed -i 's#mirrors.tuna.tsinghua.edu.cn/git/openwrt#git.openwrt.org#g' feeds.conf.default
+        ./scripts/feeds update -a && ./scripts/feeds install -a
+
+    # 4. 加载你的硬件定制配置（2G/128G/网卡/USB3.0）
+    - name: Load Custom Hardware Config
+      run: |
+        # 检查并复制 .config（确保配置文件存在）
+        if [ -f "${{ github.workspace }}/.config" ]; then
+          cp "${{ github.workspace }}/.config" ./.config
+          make defconfig  # 自动补全驱动依赖
+          # 验证关键驱动是否包含
+          grep -E "mt7531|rtl8221|usb3|ext4|ntfs|swap" .config
+        else
+          echo "ERROR: .config file not found in repository!"
+          exit 1
+        fi
+
+    # 5. 编译固件（GitHub 用 -j4 更高效，配合 8G SWAP 避免 OOM）
+    - name: Build Firmware (GitHub Optimized)
+      run: |
+        make -j4 V=s  # GitHub 服务器CPU核心多，-j4 比 -j2 更快且稳定
+
+    # 6. 打包产物（兼容 GitHub Releases）
+    - name: Package Artifacts
+      run: |
+        mkdir -p ./artifact/firmware
+        cp -rf ./bin/targets/*/*/*.bin ./artifact/firmware/
+        cp -rf ./bin/targets/*/*/*.img.gz ./artifact/firmware/
+        cp .config ./artifact/used-config-${{ github.run_id }}.txt
+        echo "Hardware: 2G RAM + 128G EMMC + MT7531AE + RTL8221B + USB3.0" > ./artifact/hardware-info.txt
+
+    # 7. 上传到 GitHub Releases
+    - name: Upload to GitHub Releases
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: LEDE-HW-${{ github.run_id }}
+        name: LEDE 2G+128G+MT7531AE+RTL8221B
+        files: |
+          ./artifact/*
+        body: |
+          GitHub Actions 编译产物
+          硬件适配：2G内存(SWAP/大页) + 128G EMMC(EXT4/NTFS) + USB3.0 + MT7531AE/RTL8221B
+          编译时间：${{ github.run_started_at }}
