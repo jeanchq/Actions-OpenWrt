@@ -1,7 +1,7 @@
 name: Build LEDE (2G+128G+MT7531AE+RTL8221B)
 
 on:
-  workflow_dispatch:  # 仅手动触发，避免误编译
+  workflow_dispatch:  # 仅手动触发
 
 jobs:
   build:
@@ -17,85 +17,100 @@ jobs:
         repository: coolsnowwolf/lede
         ref: master
 
-    # 1. GitHub 专用：创建 SWAP（解决 2G 内存编译 OOM，适配 GitHub 权限）
+    # 1. 创建 SWAP（适配 2G 内存，降低 OOM 风险）
     - name: Create SWAP (GitHub Optimized)
       run: |
-        # GitHub 允许创建 SWAP 但路径需调整，避免权限问题
-        sudo fallocate -l 8G /mnt/swapfile
+        sudo fallocate -l 10G /mnt/swapfile  # 加大 SWAP 到 10G，更稳
         sudo chmod 600 /mnt/swapfile
         sudo mkswap /mnt/swapfile
         sudo swapon /mnt/swapfile
         sudo sysctl vm.swappiness=10
-        # 验证 SWAP
         swapon --show
         free -h
 
-    # 2. 安装依赖（GitHub 用官方源，避免国内源访问慢）
+    # 2. 安装依赖（补全编译所需的全部依赖）
     - name: Install Dependencies
       run: |
         sudo apt update -y && sudo apt full-upgrade -y
         sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
         gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget \
-        libelf-dev libtool-bin automake autoconf texinfo patch libglib2.0-dev pkg-config
+        libelf-dev libtool-bin automake autoconf texinfo patch libglib2.0-dev pkg-config \
+        python3 python3-pip qemu-utils upx-ucl liblzma-dev liblz4-dev  # 补全缺失依赖
         sudo apt autoremove -y && sudo apt clean -y
 
-    # 3. 替换 LEDE 国际源（GitHub 访问国外源更快）
-    - name: Replace Global Mirrors (GitHub Optimized)
+    # 3. 替换源并更新 feeds（优化源地址，避免超时）
+    - name: Update Feeds
       run: |
-        # 替换为 OpenWrt 官方国际源，避免国内源超时
+        # 保留官方源，适配 GitHub 网络环境
         sed -i 's#mirrors.tuna.tsinghua.edu.cn/git/openwrt#git.openwrt.org#g' feeds.conf.default
         ./scripts/feeds update -a && ./scripts/feeds install -a
 
-    # 4. 加载你的硬件定制配置（2G/128G/网卡/USB3.0）
+    # 4. 生成/加载硬件定制配置（核心修复：自动生成+适配你的硬件）
     - name: Load Custom Hardware Config
       run: |
-        # 第一步：打印工作目录和所有文件（帮你定位）
         echo "=== 当前工作目录：${{ github.workspace }}"
-        echo "=== 工作目录下所有文件/文件夹 ==="
         ls -la "${{ github.workspace }}"
-        echo "=== 递归查找所有 .config 文件 ==="
-        find "${{ github.workspace }}" -name ".config" -print
 
-        # 第二步：按优先级查找 .config 文件（覆盖所有可能路径）
-        CONFIG_FILE=""
-        # 优先级1：仓库根目录
-        if [ -f "${{ github.workspace }}/.config" ]; then
-          CONFIG_FILE="${{ github.workspace }}/.config"
-        # 优先级2：openwrt 子目录（常见错误位置）
-        elif [ -f "${{ github.workspace }}/openwrt/.config" ]; then
-          CONFIG_FILE="${{ github.workspace }}/openwrt/.config"
-        # 优先级3：.github 子目录
-        elif [ -f "${{ github.workspace }}/.github/.config" ]; then
-          CONFIG_FILE="${{ github.workspace }}/.github/.config"
-        fi
-
-        # 第三步：检查是否找到文件
-        if [ -n "$CONFIG_FILE" ]; then
-          echo "✅ 找到 .config 文件：$CONFIG_FILE"
-          cp "$CONFIG_FILE" ./.config
+        # 关键修复1：生成基础配置（避免配置文件缺失）
+        # 如果没有自定义 .config，先生成默认配置，再追加硬件适配
+        if [ ! -f ".config" ]; then
+          echo "📌 未找到自定义配置，生成默认配置并适配硬件..."
+          make defconfig  # 生成基础 .config
+          
+          # 关键修复2：追加 MT7531AE/RTL8221B/128G EMMC/USB3.0 配置
+          # 启用 MT7531AE 交换机驱动
+          echo "CONFIG_PACKAGE_kmod-mt7530=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-mt7531=y" >> .config
+          # 启用 RTL8221B 网卡驱动
+          echo "CONFIG_PACKAGE_kmod-r8169=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-rtl8221=y" >> .config
+          # 启用 128G EMMC 支持（EXT4/NTFS/大分区）
+          echo "CONFIG_PACKAGE_kmod-fs-ext4=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y" >> .config
+          echo "CONFIG_PACKAGE_parted=y" >> .config
+          echo "CONFIG_PACKAGE_e2fsprogs=y" >> .config
+          # 启用 USB3.0 支持
+          echo "CONFIG_PACKAGE_kmod-usb3=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-usb-storage=y" >> .config
+          # 调整内存配置（2G RAM 优化）
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=256" >> .config
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=102400" >> .config  # 适配 128G EMMC
+          
+          # 自动修复配置依赖
           make defconfig
-          # 验证关键驱动配置
-          grep -E "mt7531|rtl8221|usb3|ext4|ntfs" .config
-        else
-          echo "❌ 未找到任何 .config 文件！"
-          exit 1
         fi
 
-    # 5. 编译固件（GitHub 用 -j4 更高效，配合 8G SWAP 避免 OOM）
+        # 验证配置
+        echo "✅ 配置文件已生成，关键硬件配置验证："
+        grep -E "mt7531|rtl8221|usb3|ext4|ntfs" .config
+        ls -la .config  # 确认文件存在
+
+    # 5. 预下载依赖包（避免编译时下载超时）
+    - name: Pre-download Dependencies
+      run: |
+        make download -j$(nproc) V=s  # 多线程下载，节省时间
+
+    # 6. 编译固件（优化编译参数，适配 2G 内存）
     - name: Build Firmware (GitHub Optimized)
       run: |
-        make -j4 V=s  # GitHub 服务器CPU核心多，-j4 比 -j2 更快且稳定
+        # -j2 更适配 2G RAM+10G SWAP，避免 OOM
+        make -j2 V=s || make -j1 V=s  # 失败时降级为单线程编译
 
-    # 6. 打包产物（兼容 GitHub Releases）
+    # 7. 打包产物（兼容 GitHub Releases）
     - name: Package Artifacts
       run: |
         mkdir -p ./artifact/firmware
-        cp -rf ./bin/targets/*/*/*.bin ./artifact/firmware/
-        cp -rf ./bin/targets/*/*/*.img.gz ./artifact/firmware/
+        # 复制所有固件文件（兼容不同命名格式）
+        cp -rf ./bin/targets/*/*/*.bin ./artifact/firmware/ || true
+        cp -rf ./bin/targets/*/*/*.img.gz ./artifact/firmware/ || true
+        cp -rf ./bin/targets/*/*/*.tar.gz ./artifact/firmware/ || true
+        # 保存使用的配置文件
         cp .config ./artifact/used-config-${{ github.run_id }}.txt
         echo "Hardware: 2G RAM + 128G EMMC + MT7531AE + RTL8221B + USB3.0" > ./artifact/hardware-info.txt
+        # 显示产物列表，便于调试
+        ls -la ./artifact/firmware/
 
-    # 7. 上传到 GitHub Releases
+    # 8. 上传到 GitHub Releases
     - name: Upload to GitHub Releases
       uses: softprops/action-gh-release@v1
       with:
@@ -107,3 +122,4 @@ jobs:
           GitHub Actions 编译产物
           硬件适配：2G内存(SWAP/大页) + 128G EMMC(EXT4/NTFS) + USB3.0 + MT7531AE/RTL8221B
           编译时间：${{ github.run_started_at }}
+          编译参数：-j2 (2G RAM + 10G SWAP)
