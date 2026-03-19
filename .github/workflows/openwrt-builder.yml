@@ -1,9 +1,10 @@
 name: Build-LEDE-S20PLUS-MT7986A-2x2.5G-5x1G
 
 on:
-  workflow_dispatch:
-  env:
-    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 兼容 Node.js 24，消除警告
+  workflow_dispatch:  # 仅手动触发（移除on内的env，语法合规）
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 移到根节点，兼容Node.js 24
 
 jobs:
   build:
@@ -30,9 +31,9 @@ jobs:
         echo "==== 清理后磁盘占用 ===="
         df -h
 
-    # ========== 2. 拉取 LEDE 源码（升级到 Node.js 24 兼容版） ==========
+    # ========== 2. 拉取 LEDE 源码（Node.js 24 兼容版） ==========
     - name: Checkout LEDE Source (S20PLUS)
-      uses: actions/checkout@v4.2.1  # 升级到支持 Node.js 24 的版本
+      uses: actions/checkout@v4.2.1  # 支持Node.js 24的版本
       with:
         fetch-depth: 0
         repository: coolsnowwolf/lede
@@ -59,31 +60,31 @@ jobs:
         python3 python3-pip qemu-utils upx-ucl liblzma-dev liblz4-dev
         sudo apt autoremove -y && sudo apt clean -y
 
-    # ========== 5. 更新 Feeds & 适配 S20PLUS（修复核心报错） ==========
+    # ========== 5. 更新 Feeds & 适配 S20PLUS（核心修复） ==========
     - name: Update Feeds & Patch S20PLUS
       run: |
-        # 替换国际源，适配 GitHub 网络
+        # 替换国际源，适配GitHub网络
         sed -i 's#mirrors.tuna.tsinghua.edu.cn/git/openwrt#git.openwrt.org#g' feeds.conf.default
-        ./scripts/feeds update -a || true  # 容错：feeds 更新失败不终止
+        ./scripts/feeds update -a || true  # 容错：feeds更新失败不终止
         ./scripts/feeds install -a || true
 
-        # 修复：S20PLUS 设备树适配（兼容不同 LEDE 版本路径）
+        # S20PLUS设备树适配（兼容不同LEDE版本）
         DTS_DIR="target/linux/mediatek/files/arch/arm64/boot/dts/mediatek"
         GENERIC_DTS="${DTS_DIR}/mt7986a-generic.dts"
         S20PLUS_DTS="${DTS_DIR}/mt7986a-s20plus.dts"
         
-        # 仅当通用设备树存在时才复制（避免文件不存在报错）
+        # 仅当通用设备树存在时复制
         if [ -f "${GENERIC_DTS}" ] && [ ! -f "${S20PLUS_DTS}" ]; then
-          echo "==== 适配 S20PLUS 设备树 ===="
+          echo "==== 适配S20PLUS设备树 ===="
           cp "${GENERIC_DTS}" "${S20PLUS_DTS}"
           
-          # 修复：用 printf 替代 echo -e，兼容所有 shell
-          printf "\n/* S20PLUS 网口拓扑：WAN2.5G直连CPU，LAN2.5G走MT7531AE */\n" >> "${S20PLUS_DTS}"
+          # 用printf替代echo -e，兼容所有shell
+          printf "\n/* S20PLUS网口拓扑：WAN2.5G直连CPU，LAN2.5G走MT7531AE */\n" >> "${S20PLUS_DTS}"
           printf "&gmac0 { status = \"okay\"; phy-mode = \"sgmii\"; phy-handle = <&rtl8221b_wan>; };\n" >> "${S20PLUS_DTS}"
           printf "&switch0 { status = \"okay\"; phy-mode = \"hsgmii\"; phy-handle = <&rtl8221b_lan>; };\n" >> "${S20PLUS_DTS}"
         fi
 
-        # 修复：强制将 S20PLUS 加入设备列表（避免编译时找不到设备）
+        # 强制将S20PLUS加入设备列表（解决"找不到设备"问题）
         echo "define Device/mediatek_mt7986a-s20plus" >> target/linux/mediatek/image/filogic.mk
         echo "  FILESYSTEMS := squashfs" >> target/linux/mediatek/image/filogic.mk
         echo "  DEVICE_VENDOR := S20PLUS" >> target/linux/mediatek/image/filogic.mk
@@ -93,22 +94,21 @@ jobs:
         echo "endef" >> target/linux/mediatek/image/filogic.mk
         echo "TARGET_DEVICES += mediatek_mt7986a-s20plus" >> target/linux/mediatek/image/filogic.mk
 
-    # ========== 6. S20PLUS 专属 .config（核心） ==========
+    # ========== 6. S20PLUS专属.config（核心） ==========
     - name: Write S20PLUS .config
       run: |
         cat > .config << 'EOF'
-        # ===================== S20PLUS 基础配置 =====================
+        # ===================== S20PLUS基础配置 =====================
         CONFIG_TARGET_mediatek=y
         CONFIG_TARGET_mediatek_filogic=y
         CONFIG_TARGET_MEDIATEK_FILOGIC_MT7986A=y
-        # 绑定 S20PLUS 设备（修复：用简化的设备名）
         CONFIG_TARGET_mediatek_filogic_DEVICE_mediatek_mt7986a-s20plus=y
         CONFIG_TARGET_BOARD="filogic"
         CONFIG_TARGET_SUBTARGET="filogic"
         CONFIG_TARGET_PROFILE="DEFAULT"
         CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a53"
 
-        # ===================== 存储配置（128G EMMC） =====================
+        # ===================== 128G EMMC配置 =====================
         CONFIG_TARGET_KERNEL_PARTSIZE=512
         CONFIG_TARGET_ROOTFS_PARTSIZE=102400
         CONFIG_PACKAGE_kmod-mmc=y
@@ -117,13 +117,13 @@ jobs:
         CONFIG_PACKAGE_kmod-fs-ext4=y
         CONFIG_PACKAGE_kmod-fs-ntfs3=y
 
-        # ===================== USB3.0 配置 =====================
+        # ===================== USB3.0配置 =====================
         CONFIG_PACKAGE_kmod-usb3=y
         CONFIG_PACKAGE_kmod-usb-dwc3=y
         CONFIG_PACKAGE_kmod-usb-xhci=y
         CONFIG_PACKAGE_kmod-usb-storage=y
 
-        # ===================== S20PLUS 网口拓扑 =====================
+        # ===================== S20PLUS网口拓扑 =====================
         CONFIG_PACKAGE_kmod-mt7530=y
         CONFIG_PACKAGE_kmod-mt7531=y
         CONFIG_PACKAGE_kmod-switch-mt7530=y
@@ -152,11 +152,11 @@ jobs:
         CONFIG_BUSYBOX_CUSTOM=y
         EOF
 
-        # 自动修复配置依赖（容错：失败不终止）
+        # 自动修复配置依赖（容错）
         make defconfig || true
 
-        # 验证 S20PLUS 关键配置
-        echo "==== S20PLUS 配置校验 ===="
+        # 验证关键配置
+        echo "==== S20PLUS配置校验 ===="
         grep -E "s20plus|mt7986|mt7531|rtl8221" .config || true
 
     # ========== 7. 预下载依赖包（容错） ==========
@@ -165,35 +165,36 @@ jobs:
         make download -j$(nproc) V=s || true
         rm -rf ./tmp/* || true
 
-    # ========== 8. 编译固件（单线程，最高容错） ==========
+    # ========== 8. 编译固件（单线程+重试） ==========
     - name: Build S20PLUS Firmware
       run: |
-        # 单线程编译 + 容错：失败后重试1次
+        # 单线程编译，失败后重试1次
         make -j1 V=s || make -j1 V=s
 
     # ========== 9. 打包产物 ==========
     - name: Package Artifacts
       run: |
         mkdir -p artifact
-        # 容错：复制所有可能的固件格式
+        # 复制所有固件格式（容错）
         cp -rf bin/targets/mediatek/filogic/*.bin artifact/ || true
         cp -rf bin/targets/mediatek/filogic/*.img.gz artifact/ || true
         cp .config artifact/S20PLUS-LEDE-config.txt || true
         ls -lh artifact/ || true
 
-    # ========== 10. 上传到 GitHub Releases ==========
+    # ========== 10. 上传到GitHub Releases ==========
     - name: Upload to Release
-      uses: softprops/action-gh-release@v2.0.4  # 升级到 Node.js 24 兼容版
-      if: always()  # 即使编译失败也上传日志/配置
+      uses: softprops/action-gh-release@v2.0.4  # Node.js 24兼容版
+      if: always()  # 即使编译失败也上传产物/日志
       with:
         tag_name: LEDE-S20PLUS-${{ github.run_id }}
         name: LEDE S20PLUS MT7986A 2×2.5G+5×1G 128G EMMC
         files: ./artifact/*
         body: |
-          LEDE 固件（S20PLUS 专属）
+          LEDE固件（S20PLUS专属）
           硬件适配：
           - CPU: MT7986A (Filogic 830)
           - 内存: 2G RAM
           - 存储: 128G EMMC
-          - 网口: WAN2.5G（RTL8221B 直连CPU） + LAN2.5G（RTL8221B → MT7531AE） + 5×1G（MT7531AE）
+          - 网口: WAN2.5G（RTL8221B直连CPU） + LAN2.5G（RTL8221B→MT7531AE） + 5×1G（MT7531AE）
           - 扩展: USB3.0
+          编译特性：单线程编译，适配2G内存，无磁盘溢出风险
