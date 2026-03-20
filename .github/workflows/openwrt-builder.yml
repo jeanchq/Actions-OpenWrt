@@ -171,22 +171,55 @@ jobs:
           fi
           ls -lh bin/targets/mediatek/filogic/
 
+      - name: Check Build Output (Debug)
+        run: |
+          echo "=== Checking build output directory ==="
+          ls -lh bin/targets/mediatek/filogic/ || echo "Directory empty or missing!"
+          echo "=== Finding all image files ==="
+          find bin/targets -name "*.img*" -o -name "*.itb" | head -20
+
       - name: Prepare Artifacts
         run: |
           mkdir -p release_files
-          cp bin/targets/mediatek/filogic/*-generic-ext4-combined.img.gz release_files/ 2>/dev/null || true
-          cp bin/targets/mediatek/filogic/*-generic-ext4-rootfs.img.gz release_files/ 2>/dev/null || true
-          cp bin/targets/mediatek/filogic/*-generic-squashfs-combined.img.gz release_files/ 2>/dev/null || true
           
+          # 【修正】定义源目录
+          SRC_DIR="bin/targets/mediatek/filogic"
+          
+          # 【修正】尝试复制所有可能的镜像文件，而不是硬编码特定名称
+          # 这样即使文件名稍有不同也能捕获
+          cp $SRC_DIR/*ext4*.img.gz release_files/ 2>/dev/null || true
+          cp $SRC_DIR/*squashfs*.img.gz release_files/ 2>/dev/null || true
+          cp $SRC_DIR/*combined*.img.gz release_files/ 2>/dev/null || true
+          cp $SRC_DIR/*.itb release_files/ 2>/dev/null || true
+          
+          # 检查是否复制到了任何文件
+          FILE_COUNT=$(ls -1 release_files/ 2>/dev/null | wc -l)
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::No firmware images found in $SRC_DIR! Build might have failed silently or config is wrong."
+            ls -lh $SRC_DIR/
+            exit 1
+          fi
+          
+          echo "Successfully found $FILE_COUNT files."
+          
+          # 重命名文件
           cd release_files
           for f in *; do 
+            # 避免重复重命名
             if [[ "$f" != *"S20PLUS"* ]]; then
               mv "$f" "S20PLUS_MT7986A_WIRED_${f}"
+              echo "Renamed $f to S20PLUS_MT7986A_WIRED_${f}"
             fi
           done
           cd ..
+          
+          # 复制配置文件和日志
           cp .config release_files/
-          cp build.log release_files/
+          if [ -f build.log ]; then
+            cp build.log release_files/
+          fi
+          
+          ls -lh release_files/
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
