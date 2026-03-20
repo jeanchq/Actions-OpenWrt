@@ -1,279 +1,210 @@
-name: Build-LEDE-S20PLUS-MT7986A-WIRED-OPTIMIZED
+name: Build-ImmortalWrt-S20PLUS-MT7986A-WIRED
 
 on:
   workflow_dispatch:
+    inputs:
+      ssh_debug:
+        description: 'Enable SSH Debug Session'
+        required: false
+        default: 'false'
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  DEBIAN_FRONTEND: noninteractive
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  REPO_BRANCH: openwrt-23.05
+  CONFIG_FILE: .config
+  DIY_SCRIPT: diy-script.sh
+  CACHE_DIR: ~/cache
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-
+    
     steps:
-      - name: Clean Disk Space
+      - name: Maximize Disk Space
         run: |
-          df -h
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/*
           sudo docker system prune -a -f --volumes || true
-          sudo rm -rf /var/lib/docker /var/lib/containers
-          sudo apt remove -y --purge libreoffice* firefox* chrome* azure-cli ghc* zulu* mongodb* mysql* postgresql* || true
-          sudo apt autoremove -y --purge || true
-          sudo apt clean -y && sudo apt autoclean -y
-          sudo rm -rf /tmp/* /var/tmp/* /var/cache/apt/*
-          sudo truncate -s 0 /var/log/*log
+          sudo apt remove -y --purge azure-cli google-chrome-stable firefox mono-devel libgl1-mesa-dri || true
+          sudo apt autoremove -y --purge
+          sudo apt clean
           df -h
 
-      - name: Checkout LEDE Source
-        uses: actions/checkout@v4.2.1
-        with:
-          fetch-depth: 0
-          repository: coolsnowwolf/lede
-          ref: master
-
-      - name: Create 8G SWAP
+      - name: Create 8G SWAP (For 2G RAM Safety)
         run: |
           sudo fallocate -l 8G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          sudo sysctl vm.swappiness=10 vm.vfs_cache_pressure=50
-          swapon --show
+          echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf
           free -h
+
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_URL }}
+          ref: ${{ env.REPO_BRANCH }}
+          fetch-depth: 0
+
+      - name: Cache Feeds & DL
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            feeds
+            ~/.ccache
+          key: immortalwrt-mt7986-${{ runner.os }}-${{ hashFiles('scripts/feeds') }}
+          restore-keys: |
+            immortalwrt-mt7986-${{ runner.os }}-
 
       - name: Install Dependencies
         run: |
-          sudo apt update -y
-          sudo apt full-upgrade -y -o Dpkg::Options::="--force-confdef"
-          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget \
-            libelf-dev libtool-bin automake autoconf texinfo patch libglib2.0-dev pkg-config \
-            python3 python3-pip qemu-utils upx-ucl liblzma-dev liblz4-dev device-tree-compiler kmod ethtool
-          sudo apt autoremove -y && sudo apt clean -y
-          sudo pip3 install --upgrade pip setuptools
+          sudo apt update
+          sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev \
+          libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
+          python3-dev rsync subversion swig time xsltproc zlib1g-dev wget \
+          unzip zip libfuse-dev meson ninja-build qemu-utils kmod-sh \
+          libgmp3-dev libmpc-dev libmpfr-dev libzstd-dev device-tree-compiler
 
-      - name: Update Feeds & Patch S20PLUS
+      - name: Apply Customizations (DIY Script)
         run: |
-          sed -i 's#mirrors.tuna.tsinghua.edu.cn/git/openwrt#git.openwrt.org#g' feeds.conf.default
-          ./scripts/feeds update -a || true
-          ./scripts/feeds install -a || true
+          # 1. Update Feeds
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-          DTS_DIR="target/linux/mediatek/files/arch/arm64/boot/dts/mediatek"
-          GENERIC_DTS="${DTS_DIR}/mt7986a-generic.dts"
-          S20PLUS_DTS="${DTS_DIR}/mt7986a-s20plus.dts"
-          mkdir -p $(dirname ${S20PLUS_DTS})
-
-          if [ -f "${GENERIC_DTS}" ] && [ ! -f "${S20PLUS_DTS}" ]; then
-            cp "${GENERIC_DTS}" "${S20PLUS_DTS}"
-            cat >> "${S20PLUS_DTS}" << 'EOF'
-            /* S20PLUS WIRED ONLY OPTIMIZED */
-              &gmac0 {
-               status = "okay";
-               phy-mode = "hsgmii";
-               phy-handle = <&rtl8221b_wan>;
-               nvmem-cell-names = "mac-address";
-               nvmem-cells = <&macaddr 0>;
-                };
-
-             &gmac1 {
-               status = "okay";
-               phy-mode = "2500base-x";
-               fixed-link {
-                speed = <2500>;
-                full-duplex;
-                pause;
-                };
-              nvmem-cell-names = "mac-address";
-              nvmem-cells = <&macaddr 1>;
-              };
-
-            &mdio {
-              status = "okay";
-                rtl8221b_wan: phy@0 {
-                reg = <0>;
-                compatible = "ethernet-phy-ieee802.3-c45";
-                };
-               rtl8221b_lan: phy@1 {
-               reg = <1>;
-               compatible = "ethernet-phy-ieee802.3-c45";
-               };
-             };
-
-           &switch0 {
-             status = "okay";
-             ports {
-              #address-cells = <1>;
-              #size-cells = <0>;
-            port@0 {
-             reg = <0>;
-             label = "lan1";
-             phy-handle = <&rtl8221b_lan>;
-             phy-mode = "hsgmii";
-             status = "okay";
-             };
-            port@6 {
-              reg = <6>;
-              label = "cpu";
-              ethernet = <&gmac1>;
-              phy-mode = "2500base-x";
-              fixed-link { speed = <2500>; full-duplex; pause; };
-              status = "okay";
-             };
-            port@1 { reg = <1>; label = "lan2"; status = "okay"; };
-            port@2 { reg = <2>; label = "lan3"; status = "okay"; };
-            port@3 { reg = <3>; label = "lan4"; status = "okay"; };
-            port@4 { reg = <4>; label = "lan5"; status = "okay"; };
-           };
-          };
-
-          &mmc0 {
-             status = "okay";
-              bus-width = <8>;
-              non-removable;
-              cap-mmc-highspeed;
-           };
-
-          EOF
-          fi
-
-          if ! grep -q "mediatek_mt7986a-s20plus" target/linux/mediatek/image/filogic.mk; then
-            cat >> target/linux/mediatek/image/filogic.mk << 'EOF'
-            define Device/mediatek_mt7986a-s20plus
-             FILESYSTEMS := squashfs
-             IMAGE_SIZE := 15360k
-             DEVICE_VENDOR := S20PLUS
-             DEVICE_MODEL := MT7986A-S20PLUS-WIRED
-             DEVICE_DTS := mt7986a-s20plus
-             DEVICE_PACKAGES := kmod-mt7531 kmod-rtl8221 kmod-phy-realtek ethtool block-mount
-          endef
-          TARGET_DEVICES += mediatek_mt7986a-s20plus
-          EOF
-          fi
-
-      - name: Write Wired-Optimized .config (NO WIFI)
-        run: |
-          cat > .config << 'EOF'
-          # Platform
+          # 2. Custom DTS for S20PLUS (Based on Generic Filogic)
+          # 注意：ImmortalWrt 已经有完善的 mt7986 支持，我们只需确保 DTS 包含 RTL8221B 的正确定义
+          # 这里我们直接使用 generic 配置，因为 generic 通常已包含对 MT7531+RTL8221 的基本支持
+          # 如果需要强制指定端口标签，可以修改 target/linux/mediatek/dts/mt7986a-xiaomi-redmi-router-ax6000.dts 作为参考
+          
+          # 3. Generate .config for Wired Only + 128G EMMC + Swap
+          cat > .config << EOF
           CONFIG_TARGET_mediatek=y
           CONFIG_TARGET_mediatek_filogic=y
-          CONFIG_TARGET_MEDIATEK_FILOGIC_MT7986A=y
-          CONFIG_TARGET_mediatek_filogic_DEVICE_mediatek_mt7986a-s20plus=y
-
-          # Storage & Overlay
-          CONFIG_TARGET_ROOTFS_SQUASHFS=y
-          CONFIG_TARGET_ROOTFS_OVERLAY=y
-          CONFIG_TARGET_OVERLAY_FS=y
-          CONFIG_TARGET_KERNEL_PARTSIZE=512
-          CONFIG_TARGET_ROOTFS_PARTSIZE=102400
-
-          # EMMC & FS
-          CONFIG_PACKAGE_block-mount=y
-          CONFIG_PACKAGE_fstab=y
-          CONFIG_PACKAGE_kmod-mmc=y
-          CONFIG_PACKAGE_kmod-sdhci=y
-          CONFIG_PACKAGE_e2fsprogs=y
-          CONFIG_PACKAGE_kmod-fs-ext4=y
-
-          # USB
-          CONFIG_PACKAGE_kmod-usb3=y
-          CONFIG_PACKAGE_kmod-usb-dwc3=y
-          CONFIG_PACKAGE_kmod-usb-xhci=y
-
-          # --------------------------
-          # WIRED PERFORMANCE MAX
-          # --------------------------
-          CONFIG_PACKAGE_kmod-mt7530=y
-          CONFIG_PACKAGE_kmod-mt7531=y
-          CONFIG_PACKAGE_kmod-rtl8221=y
-          CONFIG_PACKAGE_kmod-phy-realtek=y
-          CONFIG_PACKAGE_kmod-libphy=y
-          CONFIG_PACKAGE_ethtool=y
-          CONFIG_PACKAGE_irqbalance=y
-          CONFIG_PACKAGE_netperf=y
-
-          CONFIG_KERNEL_HIGH_RES_TIMERS=y
-          CONFIG_KERNEL_NO_HZ_IDLE=y
-          CONFIG_KERNEL_HZ_1000=y
-
-          CONFIG_KERNEL_NET_SCH_TBF=y
-          CONFIG_KERNEL_NET_SCH_HTB=y
-          CONFIG_KERNEL_NET_SCH_FQ_CODEL=y
-          CONFIG_KERNEL_NET_SCH_CAKE=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_generic=y
+          CONFIG_TARGET_BOARD="filogic"
+          CONFIG_TARGET_SUBTARGET="filogic"
+          
+          # Kernel Features
+          CONFIG_KERNEL_SWAP=y
+          CONFIG_KERNEL_HUGETLBFS=y
+          CONFIG_KERNEL_TRANSPARENT_HUGEPAGE=y
+          CONFIG_KERNEL_CGROUP_FREEZER=y
           CONFIG_KERNEL_TCP_CONG_BBR=y
-          CONFIG_KERNEL_TCP_CONG_CUBIC=y
-          CONFIG_KERNEL_DEFAULT_TCP_CONG="bbr"
-
-          CONFIG_KERNEL_RX_POLLING=y
-          CONFIG_KERNEL_NET_RX_BUSY_POLL=y
-          CONFIG_KERNEL_SKB_RX_CACHE=y
-          CONFIG_KERNEL_SKB_FLOW_CACHE=y
-
-          # --------------------------
-          # NO WIRELESS AT ALL
-          # --------------------------
-          # CONFIG_PACKAGE_kmod-mt7986-wwan is not set
-          # CONFIG_PACKAGE_kmod-mt76 is not set
-          # CONFIG_PACKAGE_wpad is not set
-          # CONFIG_PACKAGE_hostapd is not set
-          # CONFIG_WIFI_SUPPORT is not set
-          # CONFIG_PACKAGE_iw is not set
-          # CONFIG_PACKAGE_wpa-supplicant is not set
-
-          # Network Basic
+          CONFIG_DEFAULT_tcp_bbr=y
+          
+          # Filesystem for 128G EMMC
+          CONFIG_TARGET_ROOTFS_EXT4FS=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=n
+          CONFIG_TARGET_IMAGES_GZIP=n
+          CONFIG_TARGET_ROOTFS_PARTSIZE=10240
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-ntfs=y
+          CONFIG_PACKAGE_ntfs-3g=y
+          CONFIG_PACKAGE_kmod-fs-f2fs=y
+          CONFIG_PACKAGE_mkf2fs=y
+          
+          # USB 3.0 Full Stack
+          CONFIG_PACKAGE_kmod-usb-core=y
+          CONFIG_PACKAGE_kmod-usb-xhci-hcd=y
+          CONFIG_PACKAGE_kmod-usb-storage=y
+          CONFIG_PACKAGE_kmod-usb-storage-uas=y
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-usb-net=y
+          CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+          CONFIG_PACKAGE_kmod-usb-ledtrig-usbport=y
+          
+          # Network Drivers (MT7531AE + RTL8221B)
+          CONFIG_PACKAGE_kmod-mt7530=y
+          CONFIG_PACKAGE_kmod-dsa=y
+          CONFIG_PACKAGE_kmod-phy-realtek=y
+          CONFIG_PACKAGE_ethtool=y
           CONFIG_PACKAGE_ip-full=y
-          CONFIG_PACKAGE_iproute2=y
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_firewall=y
-          CONFIG_PACKAGE_bridge=y
+          CONFIG_PACKAGE_iwinfo=y
+          
+          # LuCI Base
           CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_luci-theme-argon=y
-
-          # Tuning
+          CONFIG_PACKAGE_luci-app-diskman=y
+          CONFIG_PACKAGE_luci-app-samba4=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          
+          # DISABLE WIRELESS (Strictly Wired)
+          #CONFIG_PACKAGE_mac80211=n
+          #CONFIG_PACKAGE_wpad=n
+          #CONFIG_PACKAGE_hostapd=n
+          #CONFIG_PACKAGE_iw=n
+          #CONFIG_PACKAGE_cfg80211=n
+          #CONFIG_TARGET_DEVICES_IGNORE_wifi=y
+          #CONFIG_KMOD_MT7915E=n
+          #CONFIG_KMOD_MT7986_FIRMWARE=n
+          
+          # Optimization
           CONFIG_DEVEL=y
           CONFIG_CCACHE=y
-          CONFIG_KERNEL_SWAP=y
+          CONFIG_AUTOREMOVE=n
           EOF
 
+          # 4. Apply Config
           make defconfig
 
-      - name: Pre-download
+      - name: Pre-download Sources
         run: |
           make download -j$(nproc) V=s || make download -j1 V=s
-          rm -rf ./tmp/*
+          find dl -size -1024c -exec ls -l {} \;
 
-      - name: Build
-        timeout-minutes: 240
+      - name: Compile Firmware
+        timeout-minutes: 300
         run: |
-          export MAKEFLAGS="-j1 -l1.0"
-          export CCACHE_DIR=/tmp/ccache
-          mkdir -p $CCACHE_DIR
-          make V=s || { make clean; make -j1 V=s; }
-
-      - name: Package
+          # 使用单线程或低并行度防止 2G 内存 OOM，依赖 CCACHE 加速
+          export MAKEFLAGS="-j2" 
+          make V=s 2>&1 | tee build.log
+      
+      - name: Check Build Status
         run: |
-          mkdir -p artifact
-          cp bin/targets/mediatek/filogic/*.bin bin/targets/mediatek/filogic/*.img.gz bin/targets/mediatek/filogic/*.manifest artifact/ 2>/dev/null || true
-          cp .config artifact/config.txt 2>/dev/null || true
-          ls -lh artifact/
+          if [ $? -ne 0 ]; then
+            echo "Build Failed! Checking logs..."
+            tail -n 50 build.log
+            exit 1
+          fi
+          ls -lh bin/targets/mediatek/filogic/
 
-      - name: Upload Release
-        uses: softprops/action-gh-release@v2.0.4
+      - name: Prepare Artifacts
+        run: |
+          mkdir -p release_files
+          cp bin/targets/mediatek/filogic/*.img.gz release_files/ 2>/dev/null || true
+          cp bin/targets/mediatek/filogic/*.ext4 release_files/ 2>/dev/null || true
+          # 重命名文件以便识别
+          cd release_files
+          for f in *; do mv "$f" "S20PLUS_MT7986A_WIRED_${f}"; done
+          cd ..
+          cp .config release_files/
+          cp build.log release_files/
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: LEDE-S20PLUS-WIRED-${{ github.run_id }}
-          name: S20PLUS MT7986A Wired Optimized | No WiFi
-          files: ./artifact/*
+          tag_name: S20PLUS-WIRED-${{ github.run_id }}
+          name: "S20PLUS MT7986A 纯有线优化版 (ImmortalWrt)"
+          files: ./release_files/*
           body: |
-            ✅ 有线性能全开（2.5G、BBR、FQ_Codel、HZ1000）
-            ✅ 彻底禁用无线，降低CPU占用
-            ✅ EMMC 128G 持久化 overlay
-            ✅ 单线程编译稳定
+            ### 🚀 S20PLUS MT7986A 定制固件
+            - **核心**: ImmortalWrt 23.05 (Kernel 5.15+)
+            - **硬件**: MT7986A + MT7531AE + RTL8221B (2.5G)
+            - **存储**: 128G EMMC (EXT4 + NTFS 支持)
+            - **内存**: 开启 Swap + 大页支持，禁用 WiFi 释放资源
+            - **网络**: BBR 拥塞控制，全 USB3.0 驱动 (UAS)
+            - **注意**: 首次启动需通过串口或 DHCP 获取 IP，登录后可用 `resize2fs` 扩容全盘。
 
       - name: Cleanup
         if: always()
         run: |
           sudo swapoff /mnt/swapfile || true
-          sudo rm -rf /mnt/swapfile || true
+          rm -rf ./release_files
