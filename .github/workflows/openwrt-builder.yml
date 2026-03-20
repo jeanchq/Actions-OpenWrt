@@ -1,4 +1,4 @@
-name: Build-ImmortalWrt-S20PLUS-MT7986A-WIRED-FIXED
+name: Build-ImmortalWrt-S20PLUS-MT7986A-WIRED-FINAL
 
 on:
   workflow_dispatch:
@@ -9,8 +9,6 @@ on:
         default: 'false'
 
 env:
-  # 修正：使用存在的稳定分支 openwrt-23.05 或 master
-  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
   REPO_BRANCH: master
   CONFIG_FILE: .config
 
@@ -42,6 +40,7 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
+          # 【修正】格式改为 owner/repo
           repository: immortalwrt/immortalwrt
           ref: ${{ env.REPO_BRANCH }}
           fetch-depth: 0
@@ -61,24 +60,20 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update
+          # 【修正】移除了 kmod-sh，添加了必要的构建工具
           sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
           gettext git java-propose-classpath libelf-dev libncurses5-dev \
           libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
           python3-dev rsync subversion swig time xsltproc zlib1g-dev wget \
-          unzip zip libfuse-dev meson ninja-build qemu-utils kmod-sh \
-          libgmp3-dev libmpc-dev libmpfr-dev libzstd-dev device-tree-compiler
+          unzip zip libfuse-dev meson ninja-build qemu-utils \
+          libgmp3-dev libmpc-dev libmpfr-dev libzstd-dev device-tree-compiler \
+          curl libucontext-dev
 
       - name: Apply Customizations & Config
         run: |
           # 1. Update Feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-          # 2. [可选] 如果 S20PLUS 有特定 DTS，在此处替换
-          # 如果没有，我们尝试基于 ax6000 (同方案) 修改，因为 generic 可能不认 RTL8221B 的 GPIO
-          # 这里为了稳妥，先保持 generic，但如果网口不通，请取消下面几行的注释并调整
-          # cp target/linux/mediatek/dts/mt7986a-xiaomi-redmi-router-ax6000.dts target/linux/mediatek/dts/mt7986a-s20plus.dts
-          # 然后在 .config 中修改 DEVICE 为 xiaomi_redmi-router-ax6000
 
           # 3. Generate .config
           cat > .config << EOF
@@ -153,7 +148,6 @@ jobs:
           CONFIG_ALL_NONSHARED=n
           EOF
 
-          # 4. Apply Config
           make defconfig
 
       - name: Pre-download Sources
@@ -179,12 +173,11 @@ jobs:
       - name: Prepare Artifacts
         run: |
           mkdir -p release_files
-          # 复制所有生成的镜像
-          cp bin/targets/mediatek/filogic/*.img* release_files/ 2>/dev/null || true
-          cp bin/targets/mediatek/filogic/*.ext4* release_files/ 2>/dev/null || true
+          cp bin/targets/mediatek/filogic/*-generic-ext4-combined.img.gz release_files/ 2>/dev/null || true
+          cp bin/targets/mediatek/filogic/*-generic-ext4-rootfs.img.gz release_files/ 2>/dev/null || true
+          cp bin/targets/mediatek/filogic/*-generic-squashfs-combined.img.gz release_files/ 2>/dev/null || true
           
           cd release_files
-          # 重命名
           for f in *; do 
             if [[ "$f" != *"S20PLUS"* ]]; then
               mv "$f" "S20PLUS_MT7986A_WIRED_${f}"
@@ -199,19 +192,14 @@ jobs:
         if: success()
         with:
           tag_name: S20PLUS-WIRED-${{ github.run_id }}
-          name: "S20PLUS MT7986A 纯有线优化版 (Fixed)"
+          name: "S20PLUS MT7986A 纯有线优化版 (Final No-WiFi)"
           files: ./release_files/*
           body: |
-            ### 🚀 S20PLUS MT7986A 定制固件 (修正版)
-            - **核心**: ImmortalWrt 23.05 (Kernel 5.15)
+            ### 🚀 S20PLUS MT7986A 定制固件
+            - **核心**: ImmortalWrt Master
             - **硬件**: MT7986A + MT7531AE + RTL8221B (2.5G)
-            - **存储**: 128G EMMC (EXT4 + NTFS + F2FS)
-            - **内存**: 开启 Swap + 大页，**彻底禁用 WiFi**
-            - **网络**: BBR 拥塞控制，全 USB3.0 (UAS)
-            - **注意**: 
-              1. 首次启动请使用串口确认 IP 或查看路由器 DHCP 列表。
-              2. 如果 2.5G 网口不亮，可能需要定制 DTS (参考 AX6000)。
-              3. 登录后执行 `resize2fs /dev/mmcblk0pX` 扩容至 128G。
+            - **特性**: 彻底禁用 WiFi, 128G EMMC 支持, BBR, USB3.0
+            - **注意**: 刷入后请执行 `resize2fs` 扩容。
 
       - name: Cleanup
         if: always()
