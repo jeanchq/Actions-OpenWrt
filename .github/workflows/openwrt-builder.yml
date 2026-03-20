@@ -11,6 +11,8 @@ on:
 env:
   REPO_BRANCH: master
   CONFIG_FILE: .config
+  # 【新增】强制使用 Node.js 24 运行 JS Actions，消除警告并面向未来
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -38,9 +40,8 @@ jobs:
           free -h
 
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          # 【修正】格式改为 owner/repo
           repository: immortalwrt/immortalwrt
           ref: ${{ env.REPO_BRANCH }}
           fetch-depth: 0
@@ -60,14 +61,14 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update
-          # 【修正】移除了 kmod-sh，添加了必要的构建工具
-          sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
+          # 【修正】移除 libucontext-dev，增加 flex bison，添加 --fix-missing
+          sudo apt install -y --fix-missing build-essential ccache ecj fastjar file g++ gawk \
           gettext git java-propose-classpath libelf-dev libncurses5-dev \
           libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
           python3-dev rsync subversion swig time xsltproc zlib1g-dev wget \
           unzip zip libfuse-dev meson ninja-build qemu-utils \
           libgmp3-dev libmpc-dev libmpfr-dev libzstd-dev device-tree-compiler \
-          curl libucontext-dev
+          curl flex bison
 
       - name: Apply Customizations & Config
         run: |
@@ -75,7 +76,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 3. Generate .config
+          # 2. Generate .config
           cat > .config << EOF
           CONFIG_TARGET_mediatek=y
           CONFIG_TARGET_mediatek_filogic=y
@@ -198,7 +199,7 @@ jobs:
             ### 🚀 S20PLUS MT7986A 定制固件
             - **核心**: ImmortalWrt Master
             - **硬件**: MT7986A + MT7531AE + RTL8221B (2.5G)
-            - **特性**: 彻底禁用 WiFi, 128G EMMC 支持, BBR, USB3.0
+            - **特性**: **彻底禁用 WiFi**, 128G EMMC 支持, BBR, USB3.0
             - **注意**: 刷入后请执行 `resize2fs` 扩容。
 
       - name: Cleanup
