@@ -24,16 +24,15 @@ jobs:
             python3-pyelftools swig subversion time upx-ucl uuid-dev
           sudo apt autoremove -y && sudo apt clean -y
 
-      # 2. 克隆源码（适配 openwrt-24.10 分支）
+      # 2. 克隆源码（强制 openwrt-24.10）
       - name: Clone ImmortalWrt source code
         run: |
           git clone https://github.com/immortalwrt/immortalwrt.git immortalwrt
           cd immortalwrt
-          # 强制切换到 openwrt-24.10（自动跟踪远程分支）
           git checkout -b openwrt-24.10 --track origin/openwrt-24.10
           git submodule update --init --recursive
 
-      # 3. 核心修改：硬件适配（重构 sed 逻辑，避免正则错误）
+      # 3. 核心硬件适配
       - name: Modify GL-MT6000 hardware config
         run: |
           cd immortalwrt
@@ -46,11 +45,10 @@ jobs:
           fi
           echo "Using DTS file: $DTS_FILE"
           
-          # 安全修改内存配置（避免正则冲突）
+          # 安全修改内存配置
           if grep -q "memory@40000000" $DTS_FILE; then
             sed -i '/memory@40000000/ {s/reg = <0x40000000 [0-9a-f]*>/reg = <0x40000000 0x80000000>/g;}' $DTS_FILE
           else
-            # 若未找到内存节点，手动添加（兼容 openwrt-24.10）
             echo -e "\nmemory@40000000 { reg = <0x40000000 0x80000000>; };" >> $DTS_FILE
           fi
           
@@ -58,12 +56,11 @@ jobs:
           if grep -q "phy-mode" $DTS_FILE; then
             sed -i '/phy-mode/ {s/phy-mode = .*/phy-mode = "rgmii";/g;}' $DTS_FILE
           else
-            # 若未找到 phy-mode，在 gmac0 节点添加
             sed -i '/&gmac0/ a\    phy-mode = "rgmii";' $DTS_FILE
           fi
 
           # --------------------------
-          # 3.2 自动检测分区表文件
+          # 3.2 适配 128G eMMC 分区表
           # --------------------------
           PARTITION_FILE=$(find target/linux/mediatek/image -name "*filogic*.mk" -o -name "*mt798*.mk" | head -1)
           if [ -z "$PARTITION_FILE" ]; then
@@ -72,14 +69,10 @@ jobs:
             exit 1
           fi
           echo "Using partition file: $PARTITION_FILE"
-          cp $PARTITION_FILE ${PARTITION_FILE}.bak  # 备份原文件
-
-          # --------------------------
-          # 3.3 适配 128G eMMC（安全追加，放弃 sed 替换）
-          # --------------------------
-          # 先删除旧的 GL-MT6000 配置（避免重复）
+          cp $PARTITION_FILE ${PARTITION_FILE}.bak
+          
+          # 删除旧配置 + 追加新配置
           sed -i '/define Device\/gl-mt6000/,/endef/ d' $PARTITION_FILE
-          # 重新追加全新配置（彻底避免正则错误）
           cat >> $PARTITION_FILE << 'EOF'
           
           # GL-MT6000 (2G+128G eMMC+MT7531AE) Custom Config - openwrt-24.10
@@ -101,26 +94,34 @@ jobs:
           TARGET_DEVICES += gl-mt6000
           EOF
 
-      # 4. 加载配置（适配 openwrt-24.10）
-      - name: Load GL-MT6000 defconfig
+      # 4. 从零生成 .config（核心修复：放弃依赖预设配置文件）
+      - name: Generate GL-MT6000 .config from scratch
         run: |
           cd immortalwrt
-          # 加载 filogic 通用配置（openwrt-24.10 主流）
-          cp configs/templates/mediatek/filogic/config .config || cp configs/templates/mediatek/mt798x/config .config
-          echo 'CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_gl-mt6000=y' >> .config
+          # 第一步：生成基础配置（指定架构为 mediatek/filogic）
+          echo "CONFIG_TARGET_mediatek=y" > .config
+          echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
+          echo "CONFIG_TARGET_mediatek_filogic_DEVICE_gl-mt6000=y" >> .config
           
-          # 硬件适配配置（openwrt-24.10 兼容）
-          echo 'CONFIG_TARGET_MEMORY_PROFILE_2048=y' >> .config
-          echo 'CONFIG_LINUX_KERNEL_MEMORY_SIZE=2048' >> .config
-          echo 'CONFIG_PACKAGE_kmod-switch-mt7531=y' >> .config
-          echo 'CONFIG_PACKAGE_mt7531-firmware=y' >> .config
-          echo '# CONFIG_PACKAGE_kmod-dsa-mt7530 is not set' >> .config
-          echo 'CONFIG_SWITCH_MT7531_SPEED_GIGA=y' >> .config
-          echo 'CONFIG_PACKAGE_kmod-mmc=y' >> .config
-          echo 'CONFIG_PACKAGE_kmod-sdhci-mt7622=y' >> .config
-          echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
-          echo 'CONFIG_PACKAGE-ethtool=y' >> .config
+          # 第二步：硬件适配核心配置
+          # 2GB 内存
+          echo "CONFIG_TARGET_MEMORY_PROFILE_2048=y" >> .config
+          echo "CONFIG_LINUX_KERNEL_MEMORY_SIZE=2048" >> .config
+          # MT7531AE 交换机
+          echo "CONFIG_PACKAGE_kmod-switch-mt7531=y" >> .config
+          echo "CONFIG_PACKAGE_mt7531-firmware=y" >> .config
+          echo "# CONFIG_PACKAGE_kmod-dsa-mt7530 is not set" >> .config
+          echo "CONFIG_SWITCH_MT7531_SPEED_GIGA=y" >> .config
+          # 128G eMMC
+          echo "CONFIG_PACKAGE_kmod-mmc=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-sdhci-mt7622=y" >> .config
+          # 基础组件
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+          echo "CONFIG_PACKAGE-ethtool=y" >> .config
+          echo "CONFIG_PACKAGE-opkg=y" >> .config
           
+          # 第三步：自动补全依赖（关键！替代 make defconfig）
           make defconfig
 
       # 5. 下载依赖
@@ -130,15 +131,15 @@ jobs:
           make download -j$(nproc)
           find dl -size -1024c -exec rm -f {} \;
 
-      # 6. 编译固件（openwrt-24.10 兼容）
+      # 6. 编译固件
       - name: Compile GL-MT6000 firmware
         run: |
           cd immortalwrt
           make -j$(($(nproc) + 1)) || make -j1 V=s
-          # 兼容 openwrt-24.10 输出路径
+          # 查看编译产物
           ls -lh bin/targets/mediatek/filogic/ | grep gl-mt6000 || ls -lh bin/targets/mediatek/mt798x/ | grep gl-mt6000
 
-      # 7. 上传固件（适配 openwrt-24.10 路径）
+      # 7. 上传固件
       - name: Upload GL-MT6000 firmware
         uses: actions/upload-artifact@v4
         with:
