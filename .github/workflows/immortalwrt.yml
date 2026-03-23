@@ -1,7 +1,7 @@
-name: Compile ImmortalWrt for MT6000 (2G+128G)
+name: Compile GL.iNet GL-MT6000 (2G+128G+MT7531AE)
 
 on:
-  workflow_dispatch:  # 仅保留手动触发（推荐）
+  workflow_dispatch:  # 仅手动触发，避免误编译
 
 permissions:
   contents: write
@@ -11,110 +11,161 @@ jobs:
   compile-firmware:
     runs-on: ubuntu-22.04
     steps:
-      # 步骤1：配置编译环境（无修改）
+      # 1. 配置编译环境（最小化依赖，加速安装）
       - name: Prepare build environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt update -y
-          sudo apt full-upgrade -y
+          sudo apt update -y && sudo apt full-upgrade -y
           sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib \
             gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev \
             file wget curl libelf-dev libncursesw5-dev pkg-config python3-pip qemu-utils \
             python3-pyelftools swig subversion time upx-ucl uuid-dev
+          sudo apt autoremove -y && sudo apt clean -y
 
-      # 步骤2：克隆 ImmortalWrt 源码
+      # 2. 克隆 ImmortalWrt 源码（GL-MT6000 稳定分支）
       - name: Clone ImmortalWrt source code
         run: |
-          git clone --depth=1 --single-branch https://github.com/immortalwrt/immortalwrt.git immortalwrt
+          git clone https://github.com/immortalwrt/immortalwrt.git immortalwrt
           cd immortalwrt
-          # 可选：切换稳定分支
-          # git checkout openwrt-23.05
+          git checkout openwrt-23.05  # 对 GL-MT6000 支持最完善的分支
+          git submodule update --init --recursive  # 拉取驱动子模块
 
-      # 步骤3：核心修改：调整 MT6000 内存和 EMMC 配置
-      - name: Modify MT6000 memory (2G) and EMMC (128G)
+      # 3. 核心修改：2G内存 + 128G eMMC + MT7531AE 适配
+      - name: Modify GL-MT6000 hardware config
         run: |
           cd immortalwrt
           # --------------------------
-          # 1. 修改设备树文件（内存配置）
+          # 3.1 适配 2GB 内存（修改设备树）
           # --------------------------
-          # MT6000 设备树路径：target/linux/mediatek/dts/mt7986a-mt6000.dts
-          DTS_FILE="target/linux/mediatek/dts/mt7986a-mt6000.dts"
-          # 替换内存配置为 2GB（原默认 1GB）
-          # memory@40000000 { reg = <0x40000000 0x80000000>; } 对应 2GB
-          sed -i 's/memory@40000000 { reg = <0x40000000 0x40000000>; }/memory@40000000 { reg = <0x40000000 0x80000000>; }/g' $DTS_FILE
-          
+          DTS_FILE=$(find target/linux/mediatek/dts -name "*gl-mt6000*.dts" | head -1)
+          if [ -z "$DTS_FILE" ]; then
+            DTS_FILE=$(find target/linux/mediatek/dts -name "*mt7986a-mt6000*.dts" | head -1)
+          fi
+          echo "Using DTS file: $DTS_FILE"
+          # 内存配置：0x80000000 = 2GB
+          sed -i '/memory@40000000/ s/reg = <0x40000000 [0-9a-f]*>/reg = <0x40000000 0x80000000>/g' $DTS_FILE
+          # MT7531AE 交换机：强制 RGMII 高速模式
+          sed -i '/phy-mode = .*/c\                phy-mode = "rgmii";' $DTS_FILE
+
           # --------------------------
-          # 2. 修改分区表（128G EMMC）
+          # 3.2 适配 128G eMMC（修改分区表）
           # --------------------------
-          # MT6000 分区配置路径：target/linux/mediatek/image/mt798x.mk
           PARTITION_FILE="target/linux/mediatek/image/mt798x.mk"
-          # 注释原 128MB/256MB 分区配置，新增 128G 适配
-          # 核心调整：扩大 rootfs 分区到 120G（预留 8G 给其他分区）
-          sed -i '/mt6000/s/128m/120g/g' $PARTITION_FILE
-          sed -i '/mt6000/s/256m/120g/g' $PARTITION_FILE
-          # 补充 EMMC 分区表参数（确保识别 128G 存储）
-          echo 'define Device/mt6000
-            $(Device/uimage-factory)
-            IMAGE_SIZE := 120160000k  # 120G 分区大小（适配 128G EMMC）
-            DEVICE_VENDOR := Xiaomi
-            DEVICE_MODEL := MT6000
-            DEVICE_DTS := mt7986a-mt6000
-            DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-firmware luci
+          cp $PARTITION_FILE ${PARTITION_FILE}.bak  # 备份原文件
+          
+          # 新增/修改 GL-MT6000 设备定义（128G eMMC + MT7531AE）
+          if grep -q "gl-mt6000" $PARTITION_FILE; then
+            # 替换现有配置
+            sed -i '/DEVICE_MODEL := GL-MT6000/,/endef/ c\define Device/gl-mt6000
+            \$(Device/uimage-factory)
+            IMAGE_SIZE := 118000000k
+            DEVICE_VENDOR := GL.iNet
+            DEVICE_MODEL := GL-MT6000
+            DEVICE_DTS := mt7986a-glinet-gl-mt6000
+            DEVICE_ALT0_VENDOR := GL.iNet
+            DEVICE_ALT0_MODEL := GL-MT6000
+            DEVICE_ALT0_VARIANT := eMMC-128G
+            DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-firmware kmod-switch-mt7531 mt7531-firmware \
+                     kmod-mmc kmod-sdhci-mt7622 luci luci-i18n-base-zh-cn
             BLOCKSIZE := 128k
             PAGESIZE := 2048
+            SUBPAGESIZE := 2048
+            endef' $PARTITION_FILE
+          else
+            # 新增配置
+            cat >> $PARTITION_FILE << EOF
+            
+            # GL-MT6000 (2G+128G eMMC+MT7531AE) Custom Config
+            define Device/gl-mt6000
+            \$(Device/uimage-factory)
+            IMAGE_SIZE := 118000000k  # 118G rootfs（128G eMMC 预留 10G）
+            DEVICE_VENDOR := GL.iNet
+            DEVICE_MODEL := GL-MT6000
+            DEVICE_DTS := mt7986a-glinet-gl-mt6000
+            DEVICE_ALT0_VENDOR := GL.iNet
+            DEVICE_ALT0_MODEL := GL-MT6000
+            DEVICE_ALT0_VARIANT := eMMC-128G
+            # 核心驱动：MT7531AE + eMMC + 基础组件
+            DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-firmware kmod-switch-mt7531 mt7531-firmware \
+                     kmod-mmc kmod-sdhci-mt7622 luci luci-i18n-base-zh-cn
+            BLOCKSIZE := 128k
+            PAGESIZE := 2048
+            SUBPAGESIZE := 2048
           endef
-          TARGET_DEVICES += mt6000' >> $PARTITION_FILE
+          TARGET_DEVICES += gl-mt6000
+          EOF
+          fi
 
-      # 步骤4：加载并更新 MT6000 配置
-      - name: Load MT6000 defconfig
+      # 4. 加载并优化 GL-MT6000 配置
+      - name: Load GL-MT6000 defconfig
         run: |
           cd immortalwrt
-          cp configs/templates/mediatek/mt798x/mt6000.config .config
-          # 强制启用大内存支持
+          # 加载 GL-MT6000 配置（兼容不同分支）
+          DEFCONFIG_FILE=$(find configs -name "*gl-mt6000.config" | head -1)
+          if [ -n "$DEFCONFIG_FILE" ]; then
+            cp $DEFCONFIG_FILE .config
+          else
+            cp configs/templates/mediatek/mt798x/config .config
+            echo 'CONFIG_TARGET_DEVICE_mediatek_mt798x_DEVICE_gl-mt6000=y' >> .config
+          fi
+          
+          # 强制启用 2GB 内存
           echo 'CONFIG_TARGET_MEMORY_PROFILE_2048=y' >> .config
           echo 'CONFIG_LINUX_KERNEL_MEMORY_SIZE=2048' >> .config
-          # 启用 EMMC 大容量分区支持
+          # MT7531AE 交换机专属配置（禁用冲突驱动）
+          echo 'CONFIG_PACKAGE_kmod-switch-mt7531=y' >> .config
+          echo 'CONFIG_PACKAGE_mt7531-firmware=y' >> .config
+          echo '# CONFIG_PACKAGE_kmod-dsa-mt7530 is not set' >> .config
+          echo 'CONFIG_SWITCH_MT7531_SPEED_GIGA=y' >> .config
+          # eMMC 大容量支持
           echo 'CONFIG_PACKAGE_kmod-mmc=y' >> .config
           echo 'CONFIG_PACKAGE_kmod-sdhci-mt7622=y' >> .config
-          make defconfig
+          # 中文语言包 + 基础工具
+          echo 'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' >> .config
+          echo 'CONFIG_PACKAGE-ethtool=y' >> .config
+          
+          make defconfig  # 生成最终配置
 
-      # 步骤5：下载依赖（无修改）
+      # 5. 下载依赖（加速编译）
       - name: Download dependencies
         run: |
           cd immortalwrt
           make download -j$(nproc)
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+          find dl -size -1024c -exec rm -f {} \;  # 删除空文件
 
-      # 步骤6：编译固件（无修改）
-      - name: Compile firmware
+      # 6. 编译固件（容错机制）
+      - name: Compile GL-MT6000 firmware
         run: |
           cd immortalwrt
+          # 多线程编译失败则单线程输出详细日志
           make -j$(($(nproc) + 1)) || make -j1 V=s
-          ls -lh bin/targets/mediatek/mt798x/
+          # 列出编译产物（仅显示 GL-MT6000 固件）
+          ls -lh bin/targets/mediatek/mt798x/ | grep gl-mt6000
 
-      # 步骤7：上传产物（无修改）
-      - name: Upload firmware artifacts
+      # 7. 上传固件（仅保留 GL-MT6000 相关产物）
+      - name: Upload GL-MT6000 firmware
         uses: actions/upload-artifact@v4
         with:
-          name: mt6000-immortalwrt-2g-128g-firmware
-          path: immortalwrt/bin/targets/mediatek/mt798x/
+          name: gl-mt6000-2g-128g-mt7531ae-firmware
+          path: |
+            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.bin
+            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.img
           retention-days: 30
 
-      # 步骤8：可选上传到 Release
-      - name: Create Release and upload firmware
+      # 8. 上传到 Release（可选，便于长期保存）
+      - name: Create Release for GL-MT6000
         if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: mt6000-2g-128g-${{ github.run_id }}
-          name: MT6000 (2G+128G) ImmortalWrt ${{ github.run_id }}
-          files: immortalwrt/bin/targets/mediatek/mt798x/*
+          tag_name: gl-mt6000-2g-128g-mt7531ae-${{ github.run_id }}
+          name: GL-MT6000 (2G+128G+MT7531AE) ImmortalWrt ${{ github.run_id }}
+          files: immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*
           body: |
-            ImmortalWrt for MT6000 (2GB RAM + 128GB EMMC)
+            ImmortalWrt Firmware for GL.iNet GL-MT6000
+            - Hardware: 2GB RAM + 128GB eMMC + MT7531AE Switch
             - Compile time: ${{ github.run_at }}
-            - Memory: 2GB
-            - EMMC: 128GB (rootfs: 120GB)
+            - Note: Only for GL.iNet GL-MT6000 (NOT Xiaomi MT6000)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
