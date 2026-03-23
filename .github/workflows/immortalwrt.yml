@@ -29,11 +29,15 @@ jobs:
         run: |
           git clone https://github.com/immortalwrt/immortalwrt.git immortalwrt
           cd immortalwrt
-          git checkout openwrt-23.05
+          git checkout openwrt-24.10
           git submodule update --init --recursive
 
       # 3. 核心修改：硬件适配 + 自动检测文件路径
       - name: Modify GL-MT6000 hardware config
+          echo "=== DTS files ==="
+          ls -l target/linux/mediatek/dts/*mt7986*.dts
+          echo "=== Partition files ==="
+          ls -l target/linux/mediatek/image/
         run: |
           cd immortalwrt
           # --------------------------
