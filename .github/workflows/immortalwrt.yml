@@ -24,20 +24,17 @@ jobs:
             python3-pyelftools swig subversion time upx-ucl uuid-dev
           sudo apt autoremove -y && sudo apt clean -y
 
-      # 2. 克隆源码（完整克隆，避免文件缺失）
+      # 2. 克隆源码（适配 openwrt-24.10 分支）
       - name: Clone ImmortalWrt source code
         run: |
           git clone https://github.com/immortalwrt/immortalwrt.git immortalwrt
           cd immortalwrt
-          git checkout openwrt-24.10
+          # 强制切换到 openwrt-24.10（自动跟踪远程分支）
+          git checkout -b openwrt-24.10 --track origin/openwrt-24.10
           git submodule update --init --recursive
 
-      # 3. 核心修改：硬件适配 + 自动检测文件路径
+      # 3. 核心修改：硬件适配（重构 sed 逻辑，避免正则错误）
       - name: Modify GL-MT6000 hardware config
-          echo "=== DTS files ==="
-          ls -l target/linux/mediatek/dts/*mt7986*.dts
-          echo "=== Partition files ==="
-          ls -l target/linux/mediatek/image/
         run: |
           cd immortalwrt
           # --------------------------
@@ -48,18 +45,29 @@ jobs:
             DTS_FILE=$(find target/linux/mediatek/dts -name "*mt7986a-mt6000*.dts" | head -1)
           fi
           echo "Using DTS file: $DTS_FILE"
-          # 2GB 内存配置
-          sed -i '/memory@40000000/ s/reg = <0x40000000 [0-9a-f]*>/reg = <0x40000000 0x80000000>/g' $DTS_FILE
-          # MT7531AE 强制 RGMII 模式
-          sed -i '/phy-mode = .*/c\                phy-mode = "rgmii";' $DTS_FILE
+          
+          # 安全修改内存配置（避免正则冲突）
+          if grep -q "memory@40000000" $DTS_FILE; then
+            sed -i '/memory@40000000/ {s/reg = <0x40000000 [0-9a-f]*>/reg = <0x40000000 0x80000000>/g;}' $DTS_FILE
+          else
+            # 若未找到内存节点，手动添加（兼容 openwrt-24.10）
+            echo -e "\nmemory@40000000 { reg = <0x40000000 0x80000000>; };" >> $DTS_FILE
+          fi
+          
+          # 安全修改 MT7531AE RGMII 模式
+          if grep -q "phy-mode" $DTS_FILE; then
+            sed -i '/phy-mode/ {s/phy-mode = .*/phy-mode = "rgmii";/g;}' $DTS_FILE
+          else
+            # 若未找到 phy-mode，在 gmac0 节点添加
+            sed -i '/&gmac0/ a\    phy-mode = "rgmii";' $DTS_FILE
+          fi
 
           # --------------------------
-          # 3.2 自动检测分区表文件（核心修复）
+          # 3.2 自动检测分区表文件
           # --------------------------
-          # 兼容 mt798x.mk / filogic.mk / mt7986.mk 等不同命名
-          PARTITION_FILE=$(find target/linux/mediatek/image -name "*mt798*.mk" -o -name "*filogic*.mk" | head -1)
+          PARTITION_FILE=$(find target/linux/mediatek/image -name "*filogic*.mk" -o -name "*mt798*.mk" | head -1)
           if [ -z "$PARTITION_FILE" ]; then
-            echo "Error: MT798X partition file not found!"
+            echo "Error: Partition file not found!"
             ls -l target/linux/mediatek/image/
             exit 1
           fi
@@ -67,33 +75,16 @@ jobs:
           cp $PARTITION_FILE ${PARTITION_FILE}.bak  # 备份原文件
 
           # --------------------------
-          # 3.3 适配 128G eMMC 分区
+          # 3.3 适配 128G eMMC（安全追加，放弃 sed 替换）
           # --------------------------
-          # 新增/修改 GL-MT6000 设备定义
-          if grep -q "gl-mt6000" $PARTITION_FILE; then
-            # 替换现有配置
-            sed -i '/DEVICE_MODEL := GL-MT6000/,/endef/ c\define Device/gl-mt6000
-            \$(Device/uimage-factory)
-            IMAGE_SIZE := 118000000k
-            DEVICE_VENDOR := GL.iNet
-            DEVICE_MODEL := GL-MT6000
-            DEVICE_DTS := mt7986a-glinet-gl-mt6000
-            DEVICE_ALT0_VENDOR := GL.iNet
-            DEVICE_ALT0_MODEL := GL-MT6000
-            DEVICE_ALT0_VARIANT := eMMC-128G
-            DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-firmware kmod-switch-mt7531 mt7531-firmware \
-                     kmod-mmc kmod-sdhci-mt7622 luci luci-i18n-base-zh-cn
-            BLOCKSIZE := 128k
-            PAGESIZE := 2048
-            SUBPAGESIZE := 2048
-          endef' $PARTITION_FILE
-          else
-            # 新增配置
-            cat >> $PARTITION_FILE << EOF
-            
-            # GL-MT6000 (2G+128G eMMC+MT7531AE) Custom Config
-            define Device/gl-mt6000
-            \$(Device/uimage-factory)
+          # 先删除旧的 GL-MT6000 配置（避免重复）
+          sed -i '/define Device\/gl-mt6000/,/endef/ d' $PARTITION_FILE
+          # 重新追加全新配置（彻底避免正则错误）
+          cat >> $PARTITION_FILE << 'EOF'
+          
+          # GL-MT6000 (2G+128G eMMC+MT7531AE) Custom Config - openwrt-24.10
+          define Device/gl-mt6000
+            $(Device/uimage-factory)
             IMAGE_SIZE := 118000000k
             DEVICE_VENDOR := GL.iNet
             DEVICE_MODEL := GL-MT6000
@@ -109,22 +100,16 @@ jobs:
           endef
           TARGET_DEVICES += gl-mt6000
           EOF
-          fi
 
-      # 4. 加载配置（兼容路径）
+      # 4. 加载配置（适配 openwrt-24.10）
       - name: Load GL-MT6000 defconfig
         run: |
           cd immortalwrt
-          # 加载 GL-MT6000 配置
-          DEFCONFIG_FILE=$(find configs -name "*gl-mt6000.config" | head -1)
-          if [ -n "$DEFCONFIG_FILE" ]; then
-            cp $DEFCONFIG_FILE .config
-          else
-            cp configs/templates/mediatek/mt798x/config .config || cp configs/templates/mediatek/filogic/config .config
-            echo 'CONFIG_TARGET_DEVICE_mediatek_mt798x_DEVICE_gl-mt6000=y' >> .config
-          fi
+          # 加载 filogic 通用配置（openwrt-24.10 主流）
+          cp configs/templates/mediatek/filogic/config .config || cp configs/templates/mediatek/mt798x/config .config
+          echo 'CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_gl-mt6000=y' >> .config
           
-          # 硬件适配配置
+          # 硬件适配配置（openwrt-24.10 兼容）
           echo 'CONFIG_TARGET_MEMORY_PROFILE_2048=y' >> .config
           echo 'CONFIG_LINUX_KERNEL_MEMORY_SIZE=2048' >> .config
           echo 'CONFIG_PACKAGE_kmod-switch-mt7531=y' >> .config
@@ -145,23 +130,24 @@ jobs:
           make download -j$(nproc)
           find dl -size -1024c -exec rm -f {} \;
 
-      # 6. 编译固件
+      # 6. 编译固件（openwrt-24.10 兼容）
       - name: Compile GL-MT6000 firmware
         run: |
           cd immortalwrt
           make -j$(($(nproc) + 1)) || make -j1 V=s
-          ls -lh bin/targets/mediatek/mt798x/ | grep gl-mt6000 || ls -lh bin/targets/mediatek/filogic/ | grep gl-mt6000
+          # 兼容 openwrt-24.10 输出路径
+          ls -lh bin/targets/mediatek/filogic/ | grep gl-mt6000 || ls -lh bin/targets/mediatek/mt798x/ | grep gl-mt6000
 
-      # 7. 上传固件（兼容不同输出路径）
+      # 7. 上传固件（适配 openwrt-24.10 路径）
       - name: Upload GL-MT6000 firmware
         uses: actions/upload-artifact@v4
         with:
           name: gl-mt6000-2g-128g-mt7531ae-firmware
           path: |
-            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.bin
-            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.img
             immortalwrt/bin/targets/mediatek/filogic/*gl-mt6000*.bin
             immortalwrt/bin/targets/mediatek/filogic/*gl-mt6000*.img
+            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.bin
+            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*.img
           retention-days: 30
 
       # 8. 上传到 Release
@@ -170,12 +156,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: gl-mt6000-2g-128g-mt7531ae-${{ github.run_id }}
-          name: GL-MT6000 (2G+128G+MT7531AE) ImmortalWrt ${{ github.run_id }}
+          name: GL-MT6000 (2G+128G+MT7531AE) ImmortalWrt 24.10 ${{ github.run_id }}
           files: |
-            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*
             immortalwrt/bin/targets/mediatek/filogic/*gl-mt6000*
+            immortalwrt/bin/targets/mediatek/mt798x/*gl-mt6000*
           body: |
-            ImmortalWrt Firmware for GL.iNet GL-MT6000
+            ImmortalWrt Firmware for GL.iNet GL-MT6000 (openwrt-24.10)
             - Hardware: 2GB RAM + 128GB eMMC + MT7531AE Switch
             - Compile time: ${{ github.run_at }}
             - Note: Only for GL.iNet GL-MT6000 (NOT Xiaomi MT6000)
