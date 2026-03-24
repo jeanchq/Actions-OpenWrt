@@ -1,4 +1,4 @@
-name: Build CLX S20P (chasey-dev rebase)
+name: Build CLX S20P (chasey-dev)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
         run: |
           git clone https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git openwrt
 
-      - name: Write config
+      - name: Copy full config
         run: |
           cd openwrt
           cat > .config << 'EOF'
@@ -41,16 +41,11 @@ jobs:
           CONFIG_BUSYBOX_CONFIG_BLKID=y
           CONFIG_BUSYBOX_CONFIG_FEATURE_BLKID_TYPE=y
           CONFIG_BUSYBOX_CONFIG_VOLUMEID=y
-          # CONFIG_GDB is not set
           CONFIG_INCLUDE_CONFIG=y
           CONFIG_JSON_OVERVIEW_IMAGE_INFO=y
-          # CONFIG_KERNEL_BLK_DEV_THROTTLING is not set
-          # CONFIG_KERNEL_CFS_BANDWIDTH is not set
           CONFIG_KERNEL_CGROUP_DEVICE=y
           CONFIG_KERNEL_CGROUP_FREEZER=y
           CONFIG_KERNEL_DEVMEM=y
-          # CONFIG_KERNEL_KEYS is not set
-          # CONFIG_KERNEL_MEMCG_SWAP is not set
           CONFIG_KERNEL_NET_CLS_CGROUP=y
           
           CONFIG_PACKAGE_kmod-ata-core=y
@@ -100,7 +95,6 @@ jobs:
           CONFIG_PACKAGE_kmod-lib-crc32c=y
           CONFIG_PACKAGE_kmod-lib-lzo=y
           CONFIG_PACKAGE_kmod-mediatek_hnat=y
-          
           CONFIG_PACKAGE_kmod-nf-flow=y
           CONFIG_PACKAGE_kmod-nft-compat=y
           CONFIG_PACKAGE_kmod-nft-socket=y
@@ -111,10 +105,15 @@ jobs:
           CONFIG_PACKAGE_kmod-nls-utf8=y
           CONFIG_PACKAGE_kmod-sched-core=y
           CONFIG_PACKAGE_kmod-scsi-core=y
-          
           CONFIG_PACKAGE_kmod-tun=y
           CONFIG_PACKAGE_kmod-warp=y
           CONFIG_PACKAGE_kmod-zram=y
+          
+          CONFIG_WIFI_SUPPORT=n
+          CONFIG_MTK_WHNAT_SUPPORT=y
+          CONFIG_PACKAGE_luci-app-turboacc-mtk=y
+          CONFIG_PACKAGE_luci-i18n-turboacc-mtk-zh-cn=y
+          CONFIG_PACKAGE_TURBOACC_INCLUDE_NO_FASTPATH=y
           
           CONFIG_PACKAGE_datconf=y
           CONFIG_PACKAGE_ucode-mod-datconf=y
@@ -125,11 +124,7 @@ jobs:
           CONFIG_PACKAGE_mii_mgr=y
           CONFIG_PACKAGE_regs=y
           CONFIG_PACKAGE_switch=y
-          
           CONFIG_PACKAGE_mtkhqos_util=y
-          
-          CONFIG_PACKAGE_luci-app-turboacc-mtk=y
-          CONFIG_PACKAGE_luci-i18n-turboacc-mtk-zh-cn=y
           
           CONFIG_PACKAGE_blockd=y
           CONFIG_PACKAGE_ca-certificates=y
@@ -153,7 +148,6 @@ jobs:
           CONFIG_PACKAGE_iptables-mod-tee=y
           CONFIG_PACKAGE_iptables-mod-tproxy=y
           CONFIG_PACKAGE_iptables-mod-u32=y
-          
           CONFIG_PACKAGE_libatomic=y
           CONFIG_PACKAGE_libblkid=y
           CONFIG_PACKAGE_libcap-ng=y
@@ -188,24 +182,20 @@ jobs:
           CONFIG_PACKAGE_tc-tiny=y
           CONFIG_PACKAGE_tcpdump=y
           CONFIG_PACKAGE_terminfo=y
-
           CONFIG_PACKAGE_zram-swap=y
-
-          CONFIG_PKG_FORTIFY_SOURCE_2=y
           
+          CONFIG_PKG_FORTIFY_SOURCE_2=y
           CONFIG_OPENSSL_WITH_NPN=y
-
-          CONFIG_PACKAGE_TURBOACC_INCLUDE_NO_FASTPATH=y
           EOF
-
 
       - name: Update feeds
         run: |
           cd openwrt
+          ./scripts/feeds clean
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Make defconfig
+      - name: Defconfig
         run: |
           cd openwrt
           make defconfig
@@ -213,13 +203,13 @@ jobs:
       - name: Download
         run: |
           cd openwrt
-          make -j$(nproc) download V=s
+          make download -j$(nproc)
 
-      - name: Build
+      -
+        name: Build
         run: |
           cd openwrt
-          make -j$(nproc) V=s
-
+          make -j1 V=s
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
