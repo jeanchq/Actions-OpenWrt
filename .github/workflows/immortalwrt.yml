@@ -1,83 +1,38 @@
-name: Build CLX S20P (padavanonly 6.6)
+name: Build S20P
 
 on:
   workflow_dispatch:
-  repository_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Depends
+      - name: 安装依赖
         run: |
-          sudo apt update -y
-          sudo apt install -y build-essential cmake flex git libssl-dev libncurses-dev \
-          g++ gcc-multilib gawk gettext git libelf-dev libncursesw5-dev python3 \
-          quilt subversion unzip zlib1g-dev ccache libtool-bin
-          sudo timedatectl set-timezone Asia/Shanghai
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev git python3
 
-      - name: Clone Source
+      - name: 拉取 237 源码
         run: |
-          git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
-          cd openwrt
-          git pull
-
-      - name: Write S20P Config
-        run: |
-          cd openwrt
-          cat > .config << EOF
-          CONFIG_TARGET_mediatek=y
-          CONFIG_TARGET_mediatek_filogic=y
-          CONFIG_TARGET_mediatek_filogic_DEVICE_mediatek_mt7986a-clx-s20p=y
-          CONFIG_LUCI_LANG_zh_Hans=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_WIFI_SUPPORT=n
-          CONFIG_PACKAGE_kmod-mtk-hnat=y
-          CONFIG_PACKAGE_kmod-hw-nat=y
-          CONFIG_MTK_HNAT=y
-          CONFIG_NET_FLOW_OFFLOAD=y
-          CONFIG_PACKAGE_kmod-tcp-bbr=y
-          CONFIG_PACKAGE_kmod-sched-fq-codel=y
-          CONFIG_PACKAGE_ethtool=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_kmod-mt7986-eth=y
-          CONFIG_PACKAGE_kmod-mt7531-phy=y
-          CONFIG_PACKAGE_kmod-swconfig=y
-          CONFIG_PACKAGE_kmod-usb3=y
-          CONFIG_PACKAGE_kmod-usb-storage=y
-          CONFIG_PACKAGE_kmod-fs-ext4=y
-          CONFIG_KERNEL_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y
-          CONFIG_KERNEL_HZ=1000
-          CONFIG_KERNEL_PREEMPT_VOLUNTARY=y
-          EOF
-
-      - name: Update Feeds
-        run: |
-          cd openwrt
+          git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6
+          cd immortalwrt-mt798x-6.6
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Make Defconfig
+      - name: 选择 S20P 配置
         run: |
-          cd openwrt
-          make defconfig
+          cd immortalwrt-mt798x-6.6
+          make menuconfig defconfig
+          echo "CONFIG_TARGET_mediatek=y" > .config
+          echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
+          echo "CONFIG_TARGET_mediatek_filogic_DEVICE_clx_s20p=y" >> .config
 
-      - name: Download
+      - name: 开始编译（关键 -j1）
         run: |
-          cd openwrt
-          make -j$(nproc) download V=s
-
-      - name: Build
-        run: |
-          cd openwrt
-          make -j$(nproc) V=s
-
-      - name: Upload Firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: clx-s20p-padavanonly-6.6
-          path: openwrt/bin/targets/mediatek/filogic/*.bin
+          cd immortalwrt-mt798x-6.6
+          make -j1 V=s
