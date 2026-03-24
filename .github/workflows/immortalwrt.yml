@@ -1,4 +1,4 @@
-name: Build S20P
+name: Build CLX S20P
 
 on:
   workflow_dispatch:
@@ -9,30 +9,115 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: 安装依赖
+      - name: Install Deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev git python3
+          sudo apt update -y
+          sudo apt install -y build-essential cmake flex git libssl-dev libncurses-dev g++ gcc-multilib gawk gettext libelf-dev python3 quilt subversion unzip zlib1g-dev ccache libtool-bin
 
-      - name: 拉取 237 源码
+      - name: Clone Source
         run: |
-          git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6
-          cd immortalwrt-mt798x-6.6
+          git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
+
+      - name: Write Config
+        run: |
+          cd openwrt
+          cat > .config << 'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_mt7986=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+          CONFIG_HAS_SUBTARGETS=y
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_mediatek_mt7986a-clx-s20p=y
+          CONFIG_TARGET_DEVICE_PACKAGES_mediatek_filogic_DEVICE_mediatek_mt7986a-clx-s20p=""
+          CONFIG_WIFI_SUPPORT=n
+          CONFIG_PACKAGE_kmod-mediatek_hnat=y
+          CONFIG_PACKAGE_kmod-nf-flow=y
+          CONFIG_PACKAGE_kmod-ipt-offload=y
+          CONFIG_PACKAGE_luci-app-turboacc-mtk=y
+          CONFIG_PACKAGE_luci-i18n-turboacc-mtk-zh-cn=y
+          CONFIG_PACKAGE_TURBOACC_INCLUDE_NO_FASTPATH=y
+          CONFIG_MTK_WHNAT_SUPPORT=y
+          CONFIG_MTK_FAST_NAT_SUPPORT=y
+          CONFIG_PACKAGE_kmod-sched-fq-codel=y
+          CONFIG_PACKAGE_ethtool=y
+          CONFIG_PACKAGE_switch=y
+          CONFIG_PACKAGE_mii_mgr=y
+          CONFIG_PACKAGE_regs=y
+          CONFIG_PACKAGE_mtk-smp=y
+          CONFIG_PACKAGE_mtkhqos_util=y
+          CONFIG_KERNEL_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y
+          CONFIG_KERNEL_CPU_FREQ_GOV_PERFORMANCE=y
+          CONFIG_KERNEL_HZ=1000
+          CONFIG_KERNEL_PREEMPT_VOLUNTARY=y
+          CONFIG_KERNEL_HIGH_RES_TIMERS=y
+          CONFIG_DEVEL=y
+          CONFIG_TOOLCHAINOPTS=y
+          CONFIG_BUSYBOX_CUSTOM=y
+          CONFIG_INCLUDE_CONFIG=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-theme-bootstrap-mod=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_openssh-keygen=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_zram-swap=y
+          CONFIG_PACKAGE_kmod-zram=y
+          CONFIG_PACKAGE_blockd=y
+          CONFIG_PACKAGE_ca-certificates=y
+          CONFIG_PACKAGE_essid-changer=y
+          CONFIG_PACKAGE_ip-bridge=y
+          CONFIG_PACKAGE_ip6tables-extra=y
+          CONFIG_PACKAGE_ip6tables-nft=y
+          CONFIG_PACKAGE_ipset=y
+          CONFIG_PACKAGE_iptables-mod-conntrack-extra=y
+          CONFIG_PACKAGE_iptables-mod-extra=y
+          CONFIG_PACKAGE_iptables-mod-filter=y
+          CONFIG_PACKAGE_iptables-mod-hashlimit=y
+          CONFIG_PACKAGE_iptables-mod-iface=y
+          CONFIG_PACKAGE_iptables-mod-ipmark=y
+          CONFIG_PACKAGE_iptables-mod-ipopt=y
+          CONFIG_PACKAGE_iptables-mod-iprange=y
+          CONFIG_PACKAGE_iptables-mod-ipv4options=y
+          CONFIG_PACKAGE_iptables-mod-nat-extra=y
+          CONFIG_PACKAGE_iptables-mod-proto=y
+          CONFIG_PACKAGE_iptables-mod-tee=y
+          CONFIG_PACKAGE_iptables-mod-tproxy=y
+          CONFIG_PACKAGE_iptables-mod-u32=y
+          CONFIG_PKG_FORTIFY_SOURCE_2=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          EOF
+
+      - name: Feeds
+        run: |
+          cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 选择 S20P 配置
+      - name: Defconfig
         run: |
-          cd immortalwrt-mt798x-6.6
-          make menuconfig defconfig
-          echo "CONFIG_TARGET_mediatek=y" > .config
-          echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-          echo "CONFIG_TARGET_mediatek_filogic_DEVICE_clx_s20p=y" >> .config
+          cd openwrt
+          make defconfig
 
-      - name: 开始编译（关键 -j1）
+      - name: Download
         run: |
-          cd immortalwrt-mt798x-6.6
-          make -j1 V=s
+          cd openwrt
+          make -j$(nproc) download V=s
+
+      - name: Build
+        run: |
+          cd openwrt
+          make -j$(nproc) V=s
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: S20P-Firmware
+          path: openwrt/bin/targets/mediatek/filogic/*.bin
