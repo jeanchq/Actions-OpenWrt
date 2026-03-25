@@ -22,7 +22,7 @@ jobs:
 
       - name: Clone source
         run: |
-          git clone https://github.com/hanqing9/immortalwrt-mt798x-rebase.git openwrt
+          git clone https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git openwrt
 
       - name: Copy full config
         run: |
