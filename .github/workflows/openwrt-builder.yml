@@ -109,7 +109,7 @@ jobs:
           CONFIG_PACKAGE_kmod-warp=y
           CONFIG_PACKAGE_kmod-zram=y
           
-          ONFIG_WIFI_SUPPORT=n
+          CONFIG_WIFI_SUPPORT=n
           CONFIG_MTK_WHNAT_SUPPORT=y
           CONFIG_PACKAGE_luci-app-turboacc-mtk=y
           CONFIG_PACKAGE_luci-i18n-turboacc-mtk-zh-cn=y
