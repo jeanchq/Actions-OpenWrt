@@ -22,7 +22,7 @@ jobs:
 
       - name: Clone source
         run: |
-          git clone https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git openwrt
+          git clone https://github.com/hanqing9/immortalwrt-mt798x-rebase.git openwrt
 
       - name: Copy full config
         run: |
@@ -95,7 +95,7 @@ jobs:
           CONFIG_PACKAGE_kmod-lib-crc32c=y
           CONFIG_PACKAGE_kmod-lib-lzo=y
           CONFIG_PACKAGE_kmod-mediatek_hnat=y
-          CONFIG_PACKAGE_kmod-nf-flow=y
+          CONFIG_PACKAGE_kmod-nf-flow=y       
           CONFIG_PACKAGE_kmod-nft-compat=y
           CONFIG_PACKAGE_kmod-nft-socket=y
           CONFIG_PACKAGE_kmod-nft-tproxy=y
@@ -109,7 +109,7 @@ jobs:
           CONFIG_PACKAGE_kmod-warp=y
           CONFIG_PACKAGE_kmod-zram=y
           
-          CONFIG_WIFI_SUPPORT=n
+          ONFIG_WIFI_SUPPORT=n
           CONFIG_MTK_WHNAT_SUPPORT=y
           CONFIG_PACKAGE_luci-app-turboacc-mtk=y
           CONFIG_PACKAGE_luci-i18n-turboacc-mtk-zh-cn=y
@@ -205,11 +205,11 @@ jobs:
           cd openwrt
           make download -j$(nproc)
 
-      -
-        name: Build
+      - name: Build
         run: |
           cd openwrt
           make -j1 V=s
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
